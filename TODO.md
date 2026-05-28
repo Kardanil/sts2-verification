@@ -6,15 +6,15 @@ New home for streak verification and anti-cheat orchestration.
 
 ## Tier A: Passive Verification
 
-- define attempt artifact input shape
-- call `sts2-env` / `RunValidator` for strict replay
-- return structured result:
+- define public attempt artifact input shape
+- call `sts2-env` for strict replay - deployed for M1
+- return structured result - deployed for M1:
   - status
   - matched / total actions
   - first divergence
   - state mismatch details
   - strict cheat rejection reason
-- normalize verified result for backend leaderboard policy
+- normalize verified result for backend leaderboard policy - first-pass deployed
 
 ## Mutation Tests
 
@@ -31,7 +31,7 @@ New home for streak verification and anti-cheat orchestration.
 - DB-polled Python worker exists for M1 (`streak_worker.py`)
 - decide whether long-term verification remains DB-polled or becomes a
   separate HTTP service
-- avoid importing broad `sts2-ai` runtime until structure is chosen
+- keep `sts2-verification` independent of broad `sts2-ai` runtime
 
 ## Later: Tier B/C
 
