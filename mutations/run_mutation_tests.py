@@ -92,6 +92,35 @@ def m_changed_character(manifest, actions, final_run):
     return manifest, actions, final_run
 
 
+def m_changed_ascension(manifest, actions, final_run):
+    """Claim a different ascension than recorded. Enemy scaling changes, so the
+    recorded play sequence diverges (illegal action or a different death floor)."""
+    manifest = dict(manifest)
+    manifest["ascension"] = 20 if manifest.get("ascension", 0) != 20 else 0
+    return manifest, actions, final_run
+
+
+def m_drop_required_select_card(manifest, actions, final_run):
+    """Drop a forced card-reward selection (the card_reward/select_card row and its
+    paired selection/sync_local_choice). The reward_click then leaves a pending
+    select_card surface the next recorded action cannot answer, so replay fails."""
+    i = next(
+        (k for k, e in enumerate(actions)
+         if e.get("surface") == "card_reward" and e.get("action") == "select_card"),
+        None,
+    )
+    if i is None:
+        raise AssertionError("base recording has no card_reward/select_card to drop")
+    drop = {i}
+    for j in range(i + 1, len(actions)):
+        e = actions[j]
+        if e.get("surface") == "selection" and e.get("action") == "sync_local_choice":
+            drop.add(j)
+            break
+    actions = [e for k, e in enumerate(actions) if k not in drop]
+    return manifest, actions, final_run
+
+
 def m_reward_before_combat_end(manifest, actions, final_run):
     """Inject a reward click while still in the first combat. No reward surface
     exists yet, so the engine must reject it."""
@@ -112,6 +141,8 @@ MUTATIONS: list[tuple[str, Callable, bool]] = [
     ("drop_map_select", m_drop_map_select, True),
     ("changed_seed", m_changed_seed, True),
     ("changed_character", m_changed_character, True),
+    ("changed_ascension", m_changed_ascension, True),
+    ("drop_required_select_card", m_drop_required_select_card, True),
     ("reward_before_combat_end", m_reward_before_combat_end, True),
 ]
 
