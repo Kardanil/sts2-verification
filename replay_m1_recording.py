@@ -106,6 +106,33 @@ def normalized_result(result: str | None) -> str:
     return result or "unknown"
 
 
+def recorded_final_position(
+    actions: list[dict[str, Any]], final_run: dict[str, Any] | None
+) -> tuple[int | None, int | None]:
+    """Floor/act the recording reports the player reached.
+
+    Primary source is the last action row carrying a context (each row stamps
+    context.floor/act_index). Falls back to final.run.json map_point_history.
+    """
+    floor: int | None = None
+    act: int | None = None
+    for entry in actions:
+        ctx = entry.get("context")
+        if isinstance(ctx, dict):
+            if isinstance(ctx.get("floor"), int):
+                floor = ctx["floor"]
+            if isinstance(ctx.get("act_index"), int):
+                act = ctx["act_index"]
+
+    if floor is None and isinstance(final_run, dict):
+        mph = final_run.get("map_point_history")
+        if isinstance(mph, list) and mph:
+            act = len(mph) - 1
+            floor = sum(len(a) for a in mph if isinstance(a, list))
+
+    return floor, act
+
+
 def reward_action_matches(action: dict[str, Any], reward: dict[str, Any], wanted_type: str) -> bool:
     if action.get("reward_type") != wanted_type:
         return False
@@ -132,9 +159,10 @@ def reward_action_matches(action: dict[str, Any], reward: dict[str, Any], wanted
 
 
 class M1Replayer:
-    def __init__(self, env: STS2Env, verbose: bool = False):
+    def __init__(self, env: STS2Env, verbose: bool = False, allow_cheats: bool = False):
         self.env = env
         self.verbose = verbose
+        self.allow_cheats = allow_cheats
         self.pending_input: str | None = None
         self.executed = 0
         self.skipped = 0
@@ -247,6 +275,15 @@ class M1Replayer:
         surface = entry.get("surface")
         action = entry.get("action")
         data = entry.get("data") if isinstance(entry.get("data"), dict) else {}
+
+        # Strict mode rejects in-game console (`~`) commands. The ladder recorder
+        # does not currently emit these, but reject any debug-shaped row defensively
+        # so an env-recorded or hand-edited trace cannot smuggle one through.
+        if not self.allow_cheats and (
+            surface == "debug" or action == "debug_command" or entry.get("type") == "debug_command"
+        ):
+            command = data.get("command") or entry.get("command")
+            raise ReplayFailure(f"cheat detected at seq {seq}: debug_command {command!r}")
 
         if self.is_metadata_row(surface, action):
             self.skip()
@@ -372,6 +409,7 @@ def replay_recording(
     max_seq: int | None = None,
     verbose: bool = False,
     timeout: float | None = None,
+    allow_cheats: bool = False,
 ) -> dict[str, Any]:
     recording_dir = recording_dir.expanduser().resolve()
     manifest = load_json(recording_dir / "manifest.json")
@@ -384,18 +422,39 @@ def replay_recording(
     env = STS2Env(host, port, timeout=timeout)
     env.connect()
     try:
-        replay = M1Replayer(env, verbose=verbose)
+        replay = M1Replayer(env, verbose=verbose, allow_cheats=allow_cheats)
         replay.start_run(recording_dir, manifest)
         for entry in actions:
             replay.replay_action(entry)
         final_phase = replay.get_phase()
         expected_result = expected_result_from_final_run(final_run)
         actual_result = result_from_phase(final_phase)
-        if expected_result and expected_result != "abandoned" and actual_result != expected_result:
+
+        verified_win = actual_result == "won"
+        was_abandoned = isinstance(final_run, dict) and final_run.get("was_abandoned") is True
+        env_floor = final_phase.get("floor")
+        env_act = final_phase.get("act_index")
+        rec_floor, rec_act = recorded_final_position(actions, final_run)
+
+        # Verification model (lighter): the deterministic engine enforces action
+        # legality move-by-move, so a clean replay through all recorded actions IS
+        # the proof. A win is credited only when the replay reaches victory in the
+        # engine. For a non-win, the honest-result proof is that the replay reaches
+        # the SAME floor/act the recording reports; a mismatch is a loud failure to
+        # investigate (cheat or replay divergence), never silently accepted.
+        if final_run is not None and final_run.get("win") is True and not verified_win:
             raise ReplayFailure(
-                f"final result mismatch: expected {expected_result}, "
-                f"got {actual_result or final_phase.get('phase')}"
+                f"recording claims a win but replay ended at phase "
+                f"{final_phase.get('phase')} (result {actual_result})"
             )
+        if not verified_win and not was_abandoned:
+            if rec_floor is not None and env_floor is not None and env_floor != rec_floor:
+                raise ReplayFailure(
+                    f"floor mismatch: replay reached floor {env_floor} (act {env_act}), "
+                    f"recording reported floor {rec_floor} (act {rec_act})"
+                )
+
+        verified_result = "win" if verified_win else ("abandoned" if was_abandoned else "loss")
         return {
             "ok": True,
             "run_id": manifest.get("run_id"),
@@ -408,10 +467,12 @@ def replay_recording(
             "skipped": replay.skipped,
             "expected_result": expected_result,
             "actual_result": actual_result,
-            "verified_result": normalized_result(actual_result),
-            "verified_win": actual_result == "won",
-            "verified_floor": manifest.get("reported_floor"),
-            "verified_act": manifest.get("reported_act"),
+            "verified_result": verified_result,
+            "verified_win": verified_win,
+            "verified_floor": env_floor,
+            "verified_act": env_act,
+            "reported_floor": rec_floor,
+            "reported_act": rec_act,
             "final_phase": final_phase.get("phase"),
         }
     finally:
@@ -425,6 +486,7 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=9876)
     parser.add_argument("--max-seq", type=int)
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--allow-cheats", action="store_true")
     args = parser.parse_args()
 
     try:
@@ -434,6 +496,7 @@ def main() -> int:
             port=args.port,
             max_seq=args.max_seq,
             verbose=args.verbose,
+            allow_cheats=args.allow_cheats,
         )))
     except Exception as exc:
         print(json.dumps({

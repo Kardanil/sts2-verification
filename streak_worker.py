@@ -119,6 +119,11 @@ def required_artifacts(recording_dir: Path) -> None:
     ]
     if missing:
         raise ArtifactError(f"missing required artifact(s): {', '.join(missing)}")
+    # start_run replays the run config (acts / unlock state) from the first
+    # snapshot, so a non-empty snapshots/ dir is required for M1.
+    snapshots = recording_dir / "snapshots"
+    if not snapshots.is_dir() or not any(snapshots.glob("*.save.json")):
+        raise ArtifactError("missing required artifact(s): snapshots/*.save.json")
 
 
 def actions_total(recording_dir: Path) -> int:
