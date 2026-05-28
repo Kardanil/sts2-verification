@@ -28,10 +28,9 @@ New home for streak verification and anti-cheat orchestration.
 
 ## Service Boundary
 
-- decide whether verification is:
-  - a backend-polled Python worker
-  - a separate HTTP service
-  - a CLI first, service later
+- DB-polled Python worker exists for M1 (`streak_worker.py`)
+- decide whether long-term verification remains DB-polled or becomes a
+  separate HTTP service
 - avoid importing broad `sts2-ai` runtime until structure is chosen
 
 ## Later: Tier B/C

@@ -42,6 +42,28 @@ Tier A passive verified streak:
 3. Fail known mutations for the right reasons.
 4. Emit a leaderboard-usable result only after replay passes.
 
+## Worker
+
+`streak_worker.py` polls `streak_validation_jobs` from the backend SQLite DB,
+claims queued jobs, replays uploaded M1 recordings through `sts2-env`, then
+writes the result back to `streak_validation_jobs`, `streak_attempts`, and the
+first-pass `streak_leaderboard_entries` table.
+
+Example:
+
+```bash
+DB_PATH=/opt/sls2-data/traces.db \
+STS2_ENV_HOST=127.0.0.1 \
+STS2_ENV_PORT=9942 \
+python3 /opt/sls2/sts2-verification/streak_worker.py
+```
+
+For a one-shot smoke test:
+
+```bash
+python3 streak_worker.py --db-path /path/to/traces.db --host 127.0.0.1 --port 9942 --once
+```
+
 ## Inputs
 
 Relevant current docs:

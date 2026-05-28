@@ -10,15 +10,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from pathlib import Path
 from typing import Any
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "sts2-ai"))
-
-from env.client import STS2Env  # noqa: E402
+from env_client import STS2Env
 
 
 class ReplayFailure(RuntimeError):
@@ -98,6 +94,16 @@ def result_from_phase(phase: dict[str, Any]) -> str | None:
         if isinstance(action, dict) and isinstance(action.get("result"), str):
             return action["result"]
     return "game_over"
+
+
+def normalized_result(result: str | None) -> str:
+    if result == "won":
+        return "win"
+    if result == "died":
+        return "loss"
+    if result == "abandoned":
+        return "abandoned"
+    return result or "unknown"
 
 
 def reward_action_matches(action: dict[str, Any], reward: dict[str, Any], wanted_type: str) -> bool:
@@ -358,27 +364,27 @@ class M1Replayer:
         raise ReplayFailure(f"unhandled action seq {seq}: {surface}/{action}")
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("recording_dir", type=Path)
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=9876)
-    parser.add_argument("--max-seq", type=int)
-    parser.add_argument("--verbose", action="store_true")
-    args = parser.parse_args()
-
-    recording_dir = args.recording_dir.expanduser().resolve()
+def replay_recording(
+    recording_dir: Path,
+    *,
+    host: str = "127.0.0.1",
+    port: int = 9876,
+    max_seq: int | None = None,
+    verbose: bool = False,
+    timeout: float | None = None,
+) -> dict[str, Any]:
+    recording_dir = recording_dir.expanduser().resolve()
     manifest = load_json(recording_dir / "manifest.json")
     final_run_path = recording_dir / "final.run.json"
     final_run = load_json(final_run_path) if final_run_path.exists() else None
     actions = load_actions(recording_dir / "actions.jsonl")
-    if args.max_seq is not None:
-        actions = [a for a in actions if int(a.get("seq", 0)) <= args.max_seq]
+    if max_seq is not None:
+        actions = [a for a in actions if int(a.get("seq", 0)) <= max_seq]
 
-    env = STS2Env(args.host, args.port)
+    env = STS2Env(host, port, timeout=timeout)
     env.connect()
     try:
-        replay = M1Replayer(env, verbose=args.verbose)
+        replay = M1Replayer(env, verbose=verbose)
         replay.start_run(recording_dir, manifest)
         for entry in actions:
             replay.replay_action(entry)
@@ -390,24 +396,51 @@ def main() -> int:
                 f"final result mismatch: expected {expected_result}, "
                 f"got {actual_result or final_phase.get('phase')}"
             )
-        print(json.dumps({
+        return {
             "ok": True,
             "run_id": manifest.get("run_id"),
+            "attempt_id": manifest.get("ladder_attempt_id"),
+            "steam_id": manifest.get("steam_id"),
+            "game_version": manifest.get("game_version"),
             "actions_seen": len(actions),
+            "actions_matched": len(actions),
             "commands_sent": replay.executed,
             "skipped": replay.skipped,
             "expected_result": expected_result,
             "actual_result": actual_result,
+            "verified_result": normalized_result(actual_result),
+            "verified_win": actual_result == "won",
+            "verified_floor": manifest.get("reported_floor"),
+            "verified_act": manifest.get("reported_act"),
             "final_phase": final_phase.get("phase"),
-        }))
+        }
+    finally:
+        env.close()
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("recording_dir", type=Path)
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=9876)
+    parser.add_argument("--max-seq", type=int)
+    parser.add_argument("--verbose", action="store_true")
+    args = parser.parse_args()
+
+    try:
+        print(json.dumps(replay_recording(
+            args.recording_dir,
+            host=args.host,
+            port=args.port,
+            max_seq=args.max_seq,
+            verbose=args.verbose,
+        )))
     except Exception as exc:
         print(json.dumps({
             "ok": False,
             "error": str(exc),
         }))
         return 1
-    finally:
-        env.close()
     return 0
 
 
