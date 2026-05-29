@@ -276,14 +276,19 @@ class M1Replayer:
         action = entry.get("action")
         data = entry.get("data") if isinstance(entry.get("data"), dict) else {}
 
-        # Strict mode rejects in-game console (`~`) commands. The ladder recorder
-        # does not currently emit these, but reject any debug-shaped row defensively
-        # so an env-recorded or hand-edited trace cannot smuggle one through.
-        if not self.allow_cheats and (
-            surface == "debug" or action == "debug_command" or entry.get("type") == "debug_command"
-        ):
+        # In-game console (`~`) commands. Strict mode rejects them outright (a
+        # cheated run must never score). With --allow-cheats we instead execute the
+        # command through the env's debug console — used to verify the win path with
+        # a cheated run without grinding a legit one.
+        if surface == "debug" or action == "debug_command" or entry.get("type") == "debug_command":
             command = data.get("command") or entry.get("command")
-            raise ReplayFailure(f"cheat detected at seq {seq}: debug_command {command!r}")
+            if not self.allow_cheats:
+                raise ReplayFailure(f"cheat detected at seq {seq}: debug_command {command!r}")
+            if not command:
+                self.skip()
+                return
+            self.send({"type": "debug_command", "command": command}, seq)
+            return
 
         if self.is_metadata_row(surface, action):
             self.skip()
